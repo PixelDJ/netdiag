@@ -138,7 +138,7 @@ def main():
 
     while True:
         current_statuses = check_connectivity(config)
-        print(current_statuses)
+        # print(current_statuses)  # Debugging
         if current_statuses != last_statuses:
             if "core_switch" in current_statuses and current_statuses["core_switch"] == "down":
                 print_result("Core switch down", "failure")
@@ -158,7 +158,6 @@ def main():
                 if warnings != "none":
                     for warning in warnings:
                         print_result(warning, "warning")
-                    # print_result(", ".join(warnings), "warning")
                 else:
                     print_result("Everything is OK", "success")
             last_statuses = current_statuses
