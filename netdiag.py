@@ -3,11 +3,13 @@ import json
 import platform
 import time
 from datetime import datetime
+import dns.resolver
 
 # Color codes
 RED = "\033[91m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
+WHITE = "\033[97m"
 RESET = "\033[0m"
 
 def print_result(message, result_type):
@@ -16,7 +18,7 @@ def print_result(message, result_type):
         color_code = YELLOW
         label = "[WARN]"
     elif result_type == "info":
-        color_code = ""
+        color_code = WHITE
         label = "[INFO]"
     elif result_type == "success":
         color_code = GREEN
@@ -25,7 +27,7 @@ def print_result(message, result_type):
         color_code = RED
         label = "[FAIL]"
     else:
-        color_code = ""
+        color_code = WHITE
         label = "[INFO]"
     
     print(f"{timestamp} {color_code}{label} {message}{RESET}")
@@ -51,6 +53,21 @@ def ping(ip):
     except subprocess.CalledProcessError:
         return False
 
+def check_dns_server(dns_server, test_domain="google.com"):
+    resolver = dns.resolver.Resolver()
+    resolver.nameservers = [dns_server]
+    try:
+        answer = resolver.resolve(test_domain)
+        if answer:
+            return True
+    except dns.resolver.NoNameservers:
+        return False
+    except dns.resolver.NXDOMAIN:
+        return False
+    except dns.resolver.Timeout:
+        return False
+    return False
+
 def check_connectivity(config):
     statuses = {}
     warnings = []
@@ -65,19 +82,25 @@ def check_connectivity(config):
     wifi_controller = config["wifi_controller"]
     core_switch = config["core_switch"]
 
-    if not ping(firewall_ip):
-        statuses["firewall"] = "down"
-        return statuses
-
-    if not ping(firewall_ip):
-        statuses["firewall"] = "down"
-        return statuses
-
     if not ping(core_switch):
         statuses["core_switch"] = "down"
         return statuses
     else:
         statuses["core_switch"] = "reachable"
+
+    if not ping(firewall_ip):
+        statuses["firewall"] = "down"
+        return statuses
+
+    if not ping(dns_forwarder):
+        statuses["dns_forwarder"] = "down"
+        return statuses
+    else:
+        statuses["dns_forwarder"] = "reachable"
+        if not check_dns_server(dns_forwarder):
+            # warnings.append(f"DNS server {dns_forwarder} not resolving queries properly")
+            statuses["dns_forwarder"] = "dns_error"
+            return statuses
 
     if not ping(internal_dc1):
         if not ping(internal_dc2):
@@ -88,18 +111,16 @@ def check_connectivity(config):
             statuses["internal_dc1"] = "down"
     else:
         statuses["internal_dc1"] = "reachable"
+        if not check_dns_server(internal_dc1):
+            warnings.append(f"DNS server {internal_dc1} not resolving queries properly")
 
     if not ping(internal_dc2):
         warnings.append("Second DC down")
         statuses["internal_dc2"] = "down"
     else:
         statuses["internal_dc2"] = "reachable"
-
-    if not ping(dns_forwarder):
-        statuses["dns_forwarder"] = "down"
-        return statuses
-    else:
-        statuses["dns_forwarder"] = "reachable"
+        if not check_dns_server(internal_dc2):
+            warnings.append(f"DNS server {internal_dc2} not resolving queries properly")
 
     if not ping(wap):
         warnings.append("WAP down")
@@ -131,37 +152,43 @@ def check_connectivity(config):
     return statuses
 
 def main():
-    with open("config.json", "r") as config_file:
-        config = json.load(config_file)
-    
-    last_statuses = {}
+    try:
+        with open("config.json", "r") as config_file:
+            config = json.load(config_file)
+        
+        last_statuses = {}
 
-    while True:
-        current_statuses = check_connectivity(config)
-        # print(current_statuses)  # Debugging
-        if current_statuses != last_statuses:
-            if "core_switch" in current_statuses and current_statuses["core_switch"] == "down":
-                print_result("Core switch down", "failure")
-            elif "firewall" in current_statuses and current_statuses["firewall"] == "down":
-                print_result("Firewall down", "failure")
-            elif "dc" in current_statuses and current_statuses["dc"] == "both down":
-                print_result("No DC available", "failure")
-            elif "dns_forwarder" in current_statuses and current_statuses["dns_forwarder"] == "down":
-                print_result("DNS server down", "failure")
-            elif "external_test_ip" in current_statuses and current_statuses["external_test_ip"] == "not reachable":
-                if "external_test_ip2" in current_statuses and current_statuses["external_test_ip2"] == "not reachable":
-                    print_result("External test IPs not reachable", "failure")
+        while True:
+            current_statuses = check_connectivity(config)
+            # print(current_statuses)  # Debugging
+            if current_statuses != last_statuses:
+                if "core_switch" in current_statuses and current_statuses["core_switch"] == "down":
+                    print_result("Core switch down", "failure")
+                elif "firewall" in current_statuses and current_statuses["firewall"] == "down":
+                    print_result("Firewall down", "failure")
+                elif "dns_forwarder" in current_statuses and current_statuses["dns_forwarder"] == "down":
+                    print_result("DNS server down", "failure")
+                elif "dns_forwarder" in current_statuses and current_statuses["dns_forwarder"] == "dns_error":
+                    print_result("DNS forwarder not resolving queries properly", "failure")
+                elif "dc" in current_statuses and current_statuses["dc"] == "both down":
+                    print_result("No DC available", "failure")
+                elif "external_test_ip" in current_statuses and current_statuses["external_test_ip"] == "not reachable":
+                    if "external_test_ip2" in current_statuses and current_statuses["external_test_ip2"] == "not reachable":
+                        print_result("External test IPs not reachable", "failure")
+                    else:
+                        print_result("The first external test IP is not reachable", "warning")
                 else:
-                    print_result("The first external test IP is not reachable", "warning")
-            else:
-                warnings = current_statuses.get("warnings", [])
-                if warnings != "none":
-                    for warning in warnings:
-                        print_result(warning, "warning")
-                else:
-                    print_result("Everything is OK", "success")
-            last_statuses = current_statuses
-        time.sleep(5)
+                    warnings = current_statuses.get("warnings", [])
+                    if warnings != "none":
+                        for warning in warnings:
+                            print_result(warning, "warning")
+                    else:
+                        print_result("Everything is OK", "success")
+                last_statuses = current_statuses
+            time.sleep(5)
+    except KeyboardInterrupt:
+        print_result("Exiting...", "info")
+        return
 
 if __name__ == "__main__":
     main()
